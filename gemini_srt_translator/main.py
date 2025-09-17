@@ -121,7 +121,7 @@ class GeminiSRTTranslator:
         progress_log: bool = False,
         thoughts_log: bool = False,
         resume: bool = None,
-        debug: bool = True,
+        debug: bool = False,
         preserve_format: bool = True,  # <--- novo parâmetro
     ):
         """
