@@ -593,9 +593,7 @@ class GeminiSRTTranslator:
                     # Reusar tradução
                     translated_visible = self.translation_cache[key]
                     translated_subtitle[i].text = self._reconstruct_with_tags(tags_prefix, translated_visible)
-                    # Armazenar texto original para comentário posterior (linhas com cache)
-                    if self.preserve_original_as_comment:
-                        self._original_texts_for_comments[i] = original_subtitle[i].text
+                    # Não armazenar comentário aqui: apenas após tradução real via API
                     self.skipped_duplicates += 1
                     i += 1
                 else:
@@ -657,9 +655,7 @@ class GeminiSRTTranslator:
                     if key and key in self.translation_cache:
                         translated_visible = self.translation_cache[key]
                         translated_subtitle[i].text = self._reconstruct_with_tags(tags_prefix, translated_visible)
-                        # Armazenar texto original para comentário posterior (linhas duplicadas)
-                        if self.preserve_original_as_comment:
-                            self._original_texts_for_comments[i] = original_subtitle[i].text
+                        # Não armazenar original aqui para evitar comentar linhas não enviadas à API
                         self.skipped_duplicates += 1
                         i += 1
                         continue
