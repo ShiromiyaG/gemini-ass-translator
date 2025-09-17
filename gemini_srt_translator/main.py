@@ -1260,7 +1260,7 @@ class GeminiSRTTranslator:
                 comment_event.start = event.start
                 comment_event.end = event.end
                 # Usar tag de transparência total para tornar invisível
-                comment_event.text = f"{{\\alpha&HFF&}}# Original: {clean_original}"
+                comment_event.text = f"# Original: {clean_original}"
                 comment_event.style = event.style
                 comment_event.name = event.name
                 comment_event.marginl = event.marginl
@@ -1268,6 +1268,8 @@ class GeminiSRTTranslator:
                 comment_event.marginv = event.marginv
                 comment_event.effect = event.effect
                 comment_event.layer = event.layer
+                # Marcar como comentário para ser exportado com prefixo 'Comment:' ao invés de 'Dialogue:'
+                comment_event.is_comment = True
                 
                 new_events.append(comment_event)
             
