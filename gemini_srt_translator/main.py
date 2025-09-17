@@ -11,6 +11,7 @@ import unicodedata as ud
 import copy
 from collections import Counter
 import subprocess
+import re   # <--- ADD
 
 import json_repair
 import pysubs2
@@ -120,7 +121,7 @@ class GeminiSRTTranslator:
         progress_log: bool = False,
         thoughts_log: bool = False,
         resume: bool = None,
-        debug: bool = False,
+        debug: bool = True,
         preserve_format: bool = True,  # <--- novo parâmetro
     ):
         """
@@ -206,6 +207,10 @@ class GeminiSRTTranslator:
         self.srt_extracted = False
         self.audio_extracted = False
         self.ffmpeg_installed = check_ffmpeg_installation()
+
+        self.translation_cache: dict[str, str] = {}  # cache texto visível original -> tradução
+        self._pending_intra_batch_duplicates: list[dict] = []  # duplicadas aguardando propagação dentro do batch
+        self.skipped_duplicates = 0  # contador global de linhas reaproveitadas
 
         # Set color mode based on user preference
         set_color_mode(use_colors)
@@ -315,6 +320,22 @@ class GeminiSRTTranslator:
                 list_models.append(model.name.replace("models/", ""))
         return list_models
 
+    # --- NEW HELPERS ---
+    def _split_leading_tags(self, text: str) -> tuple[str, str]:
+        r"""
+        Separa tags iniciais {..}{..} do restante (texto visível).
+        Preserva \\N no texto visível.
+        """
+        if not text:
+            return "", ""
+        m = re.match(r'^((?:\{[^}]*\})+)', text)
+        if m:
+            return m.group(1), text[m.end():]
+        return "", text
+
+    def _reconstruct_with_tags(self, tags: str, translated_visible: str) -> str:
+        return f"{tags}{translated_visible}"
+
     def translate(self):
         """
         Main translation method. Reads the input subtitle file, translates it in batches,
@@ -418,6 +439,10 @@ class GeminiSRTTranslator:
         with open(self.input_file, "r", encoding="utf-8-sig") as original_file:
             original_subtitle = pysubs2.load(self.input_file, encoding="utf-8-sig")
             total = len(original_subtitle)
+            if not hasattr(self, "translation_cache"):
+                self.translation_cache = {}
+            # batch_visible_map controla textos visíveis únicos dentro do batch atual
+            batch_visible_map: dict[str, int] = {}
             if not original_subtitle:
                 error("Subtitle file is empty.")
                 return
@@ -512,17 +537,39 @@ class GeminiSRTTranslator:
             progress_bar(i, total, prefix="Translating:", suffix=f"{self.model_name}", isSending=True)
 
             if i < total:
-                batch.append(
-                    SubtitleObject(
-                        index=str(i + 1),
-                        content=original_subtitle[i].text,
-                        style=original_subtitle[i].style,
-                        name=original_subtitle[i].name,
-                        time_start=str(pysubs2.make_time(msecs=original_subtitle[i].start)) if self.audio_file else None,
-                        time_end=str(pysubs2.make_time(msecs=original_subtitle[i].end)) if self.audio_file else None,
-                    )
-                )
-                i += 1
+                # --- DUP CHECK (primeira linha do lote) ---
+                tags_prefix, visible_part = self._split_leading_tags(original_subtitle[i].text)
+                key = visible_part
+                if key and key in self.translation_cache:
+                    # Reusar tradução
+                    translated_visible = self.translation_cache[key]
+                    translated_subtitle[i].text = self._reconstruct_with_tags(tags_prefix, translated_visible)
+                    self.skipped_duplicates += 1
+                    i += 1
+                else:
+                    if key and key in batch_visible_map:
+                        # duplicada dentro do mesmo batch (primeira ainda não traduzida)
+                        self._pending_intra_batch_duplicates.append({
+                            "dup_index": i,
+                            "orig_index": batch_visible_map[key],
+                            "dup_tags": tags_prefix,
+                            "dup_visible": key,
+                        })
+                        i += 1
+                    else:
+                        if key:
+                            batch_visible_map[key] = i
+                        batch.append(
+                            SubtitleObject(
+                                index=str(i + 1),
+                                content=original_subtitle[i].text,
+                                style=original_subtitle[i].style,
+                                name=original_subtitle[i].name,
+                                time_start=str(pysubs2.make_time(msecs=original_subtitle[i].start)) if self.audio_file else None,
+                                time_end=str(pysubs2.make_time(msecs=original_subtitle[i].end)) if self.audio_file else None,
+                            )
+                        )
+                        i += 1
 
             # salvar progresso: próximo (1-based)
             self._save_progress(i + 1)
@@ -551,6 +598,26 @@ class GeminiSRTTranslator:
 
             while i < total or len(batch) > 0:
                 if i < total and len(batch) < self.batch_size:
+                    # --- DUP CHECK (demais linhas) ---
+                    tags_prefix, visible_part = self._split_leading_tags(original_subtitle[i].text)
+                    key = visible_part
+                    if key and key in self.translation_cache:
+                        translated_visible = self.translation_cache[key]
+                        translated_subtitle[i].text = self._reconstruct_with_tags(tags_prefix, translated_visible)
+                        self.skipped_duplicates += 1
+                        i += 1
+                        continue
+                    if key and key in batch_visible_map:
+                        self._pending_intra_batch_duplicates.append({
+                            "dup_index": i,
+                            "orig_index": batch_visible_map[key],
+                            "dup_tags": tags_prefix,
+                            "dup_visible": key,
+                        })
+                        i += 1
+                        continue
+                    if key:
+                        batch_visible_map[key] = i
                     batch.append(
                         SubtitleObject(
                             index=str(i + 1),
@@ -674,27 +741,16 @@ class GeminiSRTTranslator:
                             save_logs_to_file(self.log_file_path)
 
             success_with_progress("Translation completed successfully!")
+            if self.skipped_duplicates:
+                info(f"Skipped {self.skipped_duplicates} duplicate lines (cache reuse + intra-batch).")
             if self.progress_log:
                 save_logs_to_file(self.log_file_path)
-            # Substituir a linha original de salvamento pelo bloco abaixo:
-            save_format = "ass"
-            # Garantir extensão coerente com o formato escolhido
-            if save_format == "ass" and not translated_file.name.endswith(".ass"):
-                # renomear antes de salvar
-                new_name = translated_file.name.rsplit(".", 1)[0] + ".ass"
-                translated_file.close()
-                translated_file = open(new_name, "w+", encoding="utf-8")
 
-            translated_subtitle.save(
-                translated_file.name,
-                encoding="utf-8",
-                format=save_format
-            )
-            translated_file.close()
+            # Salvamento simplificado
+            translated_subtitle.save(self.output_file, encoding="utf-8", format="ass")
 
             if self.audio_file and os.path.exists(self.audio_file) and self.audio_extracted:
                 os.remove(self.audio_file)
-
             if self.progress_file and os.path.exists(self.progress_file):
                 os.remove(self.progress_file)
 
@@ -964,15 +1020,35 @@ class GeminiSRTTranslator:
                 translated_subtitle[line_index].text = f"\u202b{line['content']}\u202c"
             else:
                 translated_subtitle[line_index].text = line["content"]
-            
+
+            # --- CACHE STORE ---
+            if original_item:
+                _, orig_visible = self._split_leading_tags(original_item["content"])
+                tags_tr, trans_visible = self._split_leading_tags(translated_subtitle[line_index].text)
+                if orig_visible and trans_visible:
+                    self.translation_cache.setdefault(orig_visible, trans_visible)
             processed_indexes.add(str(line_index))
 
-        # If processing was not fully successful, filter the batch to retry only the failed items.
         if not all_successful or len(processed_indexes) < len(batch):
             batch[:] = [item for item in batch if item["index"] not in processed_indexes]
-            return False # Indicates partial success, batch has been modified for retry.
+            return False
 
-        return True # All items in the batch were processed successfully.
+        # Propagar duplicadas internas do batch (primeira vez que o original foi traduzido)
+        if finished and getattr(self, "_pending_intra_batch_duplicates", None):
+            for dup in self._pending_intra_batch_duplicates:
+                orig_idx = dup["orig_index"]
+                dup_idx = dup["dup_index"]
+                if not (0 <= orig_idx < len(translated_subtitle) and 0 <= dup_idx < len(translated_subtitle)):
+                    continue
+                _tags_orig, trans_visible = self._split_leading_tags(translated_subtitle[orig_idx].text)
+                final_text = f"{dup['dup_tags']}{trans_visible}"
+                translated_subtitle[dup_idx].text = final_text
+                if dup["dup_visible"]:
+                    self.translation_cache.setdefault(dup["dup_visible"], trans_visible)
+                self.skipped_duplicates += 1
+            self._pending_intra_batch_duplicates = []
+
+        return True
 
     def _dominant_strong_direction(self, s: str) -> str:
         """
