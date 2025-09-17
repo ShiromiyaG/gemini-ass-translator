@@ -18,11 +18,6 @@ pip install -e .
 
 ### 🖥️ Using the Command Line Interface (CLI)
 
-#### Basic Translation
-> ### ⚠️ **Caution!**
->
->  It replaces the original subtitle with the translated subtitle
-
 ```bash
 gst translate -i "input.ass" -l "Brazilian Portuguese" -k API_KEY --model gemini-2.5-pro --batch-size 300 --temperature 0.7 --progress-log
 ```
