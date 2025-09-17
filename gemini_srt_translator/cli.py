@@ -25,14 +25,14 @@ def get_api_key_from_env(key: str) -> Optional[str]:
     return api_key.strip() if api_key else None
 
 
-def validate_file_path(file_path: str, extension: str = None) -> bool:
+def validate_file_path(file_path: str, extensions: list = None) -> bool:
     """Validate if file exists and has correct extension."""
     if not os.path.isfile(file_path):
         error(f"File does not exist: {file_path}")
         return False
 
-    if extension and not file_path.lower().endswith(extension):
-        error(f"File must have {extension} extension: {file_path}")
+    if extensions and not any(file_path.lower().endswith(ext) for ext in extensions):
+        error(f"File must have one of the following extensions {extensions}: {file_path}")
         return False
 
     return True
@@ -63,7 +63,7 @@ def cmd_translate(args) -> None:
 
     # Validate input file
     if args.input_file:
-        if not validate_file_path(args.input_file, ".srt"):
+        if not validate_file_path(args.input_file, [".ass"]):
             sys.exit(1)
         gst.input_file = args.input_file
     if args.video_file:
@@ -128,6 +128,8 @@ def cmd_translate(args) -> None:
         gst.resume = args.resume
 
     # Execute translation
+    if args.debug:
+        gst.debug = args.debug
     try:
         gst.translate()
     except Exception as e:
@@ -150,19 +152,19 @@ def create_parser() -> argparse.ArgumentParser:
     """Create and configure argument parser."""
     parser = argparse.ArgumentParser(
         prog="gst",
-        description="Translate SRT subtitle files using Google Gemini AI",
+        description="Translate ASS/SRT subtitle files using Google Gemini AI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Using environment variable (recommended)
     export GEMINI_API_KEY="your_api_key_here"
-    gst translate -i subtitle.srt -l French
+    gst translate -i subtitle.ass -l French
 
   # Using command line argument
-    gst translate -i subtitle.srt -l French -k YOUR_API_KEY
+    gst translate -i subtitle.ass -l French -k YOUR_API_KEY
 
   # Set output file name
-    gst translate -i subtitle.srt -l French -o translated_subtitle.srt
+    gst translate -i subtitle.ass -l French -o translated_subtitle.ass
 
   # Extract subtitles from video and translate (requires FFmpeg)
     gst translate -v movie.mp4 -l Spanish
@@ -171,13 +173,13 @@ Examples:
     gst translate -v movie.mp4 -l Spanish --extract-audio
 
   # Interactive model selection
-    gst translate -i subtitle.srt -l "Brazilian Portuguese" --interactive
+    gst translate -i subtitle.ass -l "Brazilian Portuguese" --interactive
 
   # Resume translation from a specific line
-    gst translate -i subtitle.srt -l French --start-line 20
+    gst translate -i subtitle.ass -l French --start-line 20
 
   # Suppress output
-    gst translate -i subtitle.srt -l French --quiet
+    gst translate -i subtitle.ass -l French --quiet
   
   # List available models
     gst list-models -k YOUR_API_KEY
@@ -191,7 +193,7 @@ Examples:
 
     # Required arguments group
     required_group = translate_parser.add_argument_group("required arguments")
-    required_group.add_argument("-i", "--input-file", help="Input SRT file path")
+    required_group.add_argument("-i", "--input-file", help="Input subtitle file path (.ass)")
     required_group.add_argument("-v", "--video-file", help="Video file path (for SRT/Audio extraction)")
 
     translate_parser.add_argument("-l", "--target-language", help="Target language for translation")
@@ -220,6 +222,7 @@ Examples:
     translate_parser.add_argument("--quiet", action="store_true", default=None, help="Suppress output")
     translate_parser.add_argument("--resume", action="store_true", default=None, help="Resume interrupted translation")
     translate_parser.add_argument("--no-resume", dest="resume", action="store_false", help="Start from beginning")
+    translate_parser.add_argument("--debug", action="store_true", default=None, help="Enable debug logging to a file")
     translate_parser.add_argument(
         "--paid-quota", action="store_true", default=None, help="Remove artificial limits for paid quota users"
     )

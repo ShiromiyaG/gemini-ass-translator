@@ -1,4 +1,7 @@
 from google.genai import types
+import os
+import sys
+import typing
 
 
 def get_instruction(
@@ -15,14 +18,11 @@ def get_instruction(
     )
 
     fields = (
-        (
-            "- index: a string identifier\n"
-            "- content: the text to translate\n"
-            "- time_start: the start time of the segment\n"
-            "- time_end: the end time of the segment\n"
-        )
-        if audio_file
-        else ("- index: a string identifier\n" "- content: the text to translate\n")
+        "- index: a string identifier\n"
+        "- content: the text to translate\n"
+        "- style: the style of the subtitle\n"
+        "- name: the name of the speaker\n"
+        + ("- time_start: the start time of the segment\n- time_end: the end time of the segment\n" if audio_file else "")
     )
 
     instruction = (
@@ -35,6 +35,14 @@ def get_instruction(
         f"Do NOT move or merge 'content' between objects.\n"
         f"Do NOT add or remove any objects.\n"
         f"Do NOT alter the 'index' field.\n"
+        f"\n**CRITICAL INSTRUCTIONS FOR .ASS SUBTITLES:**\n"
+        f"1.  **NEVER** translate text inside curly braces `{{...}}`. These are formatting tags. Keep them IDENTICAL.\n"
+        f"    - Example: `{{\\an8\\c&H0000FF&}}` must remain `{{\\an8\\c&H0000FF&}}`.\n"
+        f"2.  The `\\N` characters are for line breaks. Preserve them exactly where they are.\n"
+        f"    - Example: `Hello\\NWorld` should be translated as `Olá\\NMundo`.\n"
+        f"3.  Only translate the plain text outside of the `{{...}}` tags.\n"
+        f"    - Example Input: `{{\\an8}}This is a red text.\\NAnd this is a new line.`\n"
+        f"    - Example Correct Output for {language}: `{{\\an8}}Este é um texto vermelho.\\NE esta é uma nova linha.`\n"
     )
 
     if audio_file:
@@ -64,7 +72,24 @@ def get_instruction(
     return instruction
 
 
-def get_safety_settings() -> list[types.SafetySetting]:
+def process_subtitle_file(input_file: str, output_file: str = None) -> typing.Tuple[str, str]:
+    """
+    Process the subtitle file, checking for its existence and generating an output file path if not provided.
+    """
+    if not os.path.isfile(input_file):
+        print(f"Subtitle file not found: {input_file}", file=sys.stderr)
+        sys.exit(1)
+
+    if not output_file:
+        input_dir = os.path.dirname(input_file)
+        input_filename = os.path.basename(input_file)
+        base_name, original_ext = os.path.splitext(input_filename)
+        output_file = os.path.join(input_dir, f"{base_name}_translated{original_ext}")
+
+    return input_file, output_file
+
+
+def get_safety_settings(free_quota: bool = True) -> list[types.SafetySetting]:
     """
     Get the safety settings for the translation model.
     """
