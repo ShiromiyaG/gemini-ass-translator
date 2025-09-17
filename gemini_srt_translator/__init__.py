@@ -38,6 +38,7 @@ from .utils import upgrade_package
 gemini_api_key: str = os.getenv("GEMINI_API_KEY", None)
 gemini_api_key2: str = os.getenv("GEMINI_API_KEY2", None)
 target_language: str = None
+source_language: str = None  # <--- adicionar esta linha
 input_file: str = None
 output_file: str = None
 video_file: str = None
@@ -60,6 +61,8 @@ progress_log: bool = None
 thoughts_log: bool = None
 quiet: bool = None
 resume: bool = None
+debug: bool = None
+preserve_original_as_comment: bool = None
 
 
 def getmodels():
@@ -118,100 +121,12 @@ def listmodels():
 def translate():
     """
     ## Translates a subtitle file using the Gemini API.
-        This function configures the genai library with the provided Gemini API key
-        and translates the dialogues in the subtitle file to the target language.
-        The translated dialogues are then written to a new subtitle file.
-
-    Example:
-    ```
-    import gemini_srt_translator as gst
-
-    # Your Gemini API key
-    gst.gemini_api_key = "your_gemini_api_key_here"
-
-    # Target language for translation
-    gst.target_language = "French"
-
-    # Path to the subtitle file to translate
-    gst.input_file = "subtitle.srt"
-
-    # (Optional) Gemini API key 2 for additional quota
-    gst.gemini_api_key2 = "your_gemini_api_key2_here"
-
-    # (Optional) Path to video file for srt extraction (if needed) and/or for audio context
-    gst.video_file = "movie.mkv"
-
-    # (Optional) Path to audio file for audio context
-    gst.audio_file = "audio.mp3"
-
-    # (Optional) Whether to extract and use audio context from video file
-    gst.extract_audio = False
-
-    # (Optional) Path to save the translated subtitle file
-    gst.output_file = "translated_subtitle.srt"
-
-    # (Optional) Line number to start translation from
-    gst.start_line = 120
-
-    # (Optional) Additional description of the translation task
-    gst.description = "This subtitle is from a TV Series called 'Friends'."
-
-    # (Optional) Model name to use for translation (default: "gemini-2.5-flash-preview-05-20")
-    gst.model_name = "gemini-2.5-flash-preview-05-20"
-
-    # (Optional) Batch size for translation (default: 300)
-    gst.batch_size = 300
-
-    # (Optional) Whether to use streamed responses (default: True)
-    gst.streaming = True
-
-    # (Optional) Whether to use thinking (default: True)
-    gst.thinking = True
-
-    # (Optional) Thinking budget for translation (default: 2048, range: 0-24576, 0 disables thinking)
-    gst.thinking_budget = 2048
-
-    # (Optional) Temperature for the translation model (range: 0.0-2.0)
-    gst.temperature = 0.5
-
-    # (Optional) Top P for the translation model (range: 0.0-1.0)
-    gst.top_p = 0.9
-
-    # (Optional) Top K for the translation model (range: >=0)
-    gst.top_k = 10
-
-    # (Optional) Signal GST that you are using the free quota (default: True)
-    gst.free_quota = True
-
-    # (Optional) Skip package upgrade check (default: False)
-    gst.skip_upgrade = False
-
-    # (Optional) Use colors in the output (default: True)
-    gst.use_colors = True
-
-    # (Optional) Enable progress logging (default: False)
-    gst.progress_log = False
-
-    # (Optional) Enable thoughts logging (default: False)
-    gst.thoughts_log = False
-
-    # (Optional) Enable quiet mode (default: False)
-    gst.quiet = False
-
-    # (Optional) Skip prompt and set automatic resume mode
-    gst.resume = False
-
-    gst.translate()
-    ```
-    Raises:
-        Exception: If the Gemini API key is not provided.
-        Exception: If the target language is not provided.
-        Exception: If the subtitle file is not provided.
     """
     params = {
         "gemini_api_key": gemini_api_key,
         "gemini_api_key2": gemini_api_key2,
         "target_language": target_language,
+        "source_language": source_language,
         "input_file": input_file,
         "output_file": output_file,
         "video_file": video_file,
@@ -232,6 +147,8 @@ def translate():
         "progress_log": progress_log,
         "thoughts_log": thoughts_log,
         "resume": resume,
+        "debug": debug,
+        "preserve_original_as_comment": preserve_original_as_comment,
     }
 
     if not skip_upgrade:

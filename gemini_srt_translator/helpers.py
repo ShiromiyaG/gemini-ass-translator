@@ -5,7 +5,12 @@ import typing
 
 
 def get_instruction(
-    language: str, thinking: bool, thinking_compatible: bool, audio_file: str = None, description: str = None
+    language: str, 
+    thinking: bool, 
+    thinking_compatible: bool, 
+    audio_file: str = None, 
+    description: str = None,
+    source_language: str = None  # <--- novo parâmetro
 ) -> str:
     """
     Get the instruction for the translation model based on the target language.
@@ -35,6 +40,19 @@ def get_instruction(
         f"Do NOT move or merge 'content' between objects.\n"
         f"Do NOT add or remove any objects.\n"
         f"Do NOT alter the 'index' field.\n"
+    )
+    
+    # Adicionar instrução de tradução seletiva
+    if source_language:
+        instruction += (
+            f"\n**SELECTIVE TRANSLATION INSTRUCTIONS:**\n"
+            f"- ONLY translate text that is in {source_language}.\n"
+            f"- If text is in any other language, leave it EXACTLY as it is.\n"
+            f"- You must detect the language of each subtitle line first.\n"
+            f"- Only translate lines that are clearly in {source_language}.\n"
+        )
+    
+    instruction += (
         f"\n**CRITICAL INSTRUCTIONS FOR .ASS SUBTITLES:**\n"
         f"1.  **NEVER** translate text inside curly braces `{{...}}`. These are formatting tags. Keep them IDENTICAL.\n"
         f"    - Example: `{{\\an8\\c&H0000FF&}}` must remain `{{\\an8\\c&H0000FF&}}`.\n"

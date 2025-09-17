@@ -34,6 +34,7 @@ from gemini_srt_translator.logger import (
     save_logs_to_file,
     save_thoughts_to_file,
     set_color_mode,
+    success,
     success_with_progress,
     update_loading_animation,
     warning,
@@ -53,31 +54,71 @@ def extract_json_from_text(text: str) -> str:
     Extracts a JSON object or array from a string.
     It handles cases where the JSON is embedded within other text.
     """
+    import re
+    
     # Remove markdown fences and other non-JSON text
     text = text.strip()
-    if text.startswith("```json"):
-        text = text[7:]
-        if text.endswith("```"):
-            text = text[:-3]
-    elif text.startswith("```"):
-        text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-
-    # Find the start of the JSON array or object
-    start_pos = text.find('[')
-    if start_pos == -1:
-        start_pos = text.find('{')
-
-    # Find the end of the JSON array or object
-    end_pos = text.rfind(']')
-    if end_pos == -1:
-        end_pos = text.rfind('}')
-
-    if start_pos != -1 and end_pos != -1:
-        return text[start_pos:end_pos+1]
-
-    return text # Return original text if no JSON structure is found
+    
+    # Remove common markdown code block patterns
+    text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s*```\s*$', '', text, flags=re.MULTILINE)
+    
+    # Remove any leading/trailing non-JSON text
+    text = re.sub(r'^[^{\[]*', '', text)
+    text = re.sub(r'[^}\]]*$', '', text)
+    
+    # Find JSON array or object patterns with better matching
+    json_patterns = [
+        r'\[(?:[^[\]]*(?:\[(?:[^[\]]*(?:\[[^[\]]*\])*[^[\]]*)*\])*[^[\]]*)*\]',  # Nested array pattern
+        r'\{(?:[^{}]*(?:\{(?:[^{}]*(?:\{[^{}]*\})*[^{}]*)*\})*[^{}]*)*\}',  # Nested object pattern
+        r'\[.*?\]',  # Simple array pattern
+        r'\{.*?\}',  # Simple object pattern
+    ]
+    
+    for pattern in json_patterns:
+        matches = re.findall(pattern, text, re.DOTALL)
+        if matches:
+            # Return the largest match (most likely to be complete JSON)
+            largest_match = max(matches, key=len)
+            # Basic validation - ensure it starts and ends correctly
+            if ((largest_match.startswith('[') and largest_match.endswith(']')) or 
+                (largest_match.startswith('{') and largest_match.endswith('}'))):
+                return largest_match
+    
+    # If no pattern matches, try to find start and end manually with bracket counting
+    start_chars = ['[', '{']
+    
+    for start_char in start_chars:
+        start_pos = text.find(start_char)
+        if start_pos != -1:
+            end_char = ']' if start_char == '[' else '}'
+            bracket_count = 0
+            in_string = False
+            escape_next = False
+            
+            for i, char in enumerate(text[start_pos:], start_pos):
+                if escape_next:
+                    escape_next = False
+                    continue
+                    
+                if char == '\\':
+                    escape_next = True
+                    continue
+                    
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+                    
+                if not in_string:
+                    if char == start_char:
+                        bracket_count += 1
+                    elif char == end_char:
+                        bracket_count -= 1
+                        if bracket_count == 0:
+                            return text[start_pos:i + 1]
+    
+    # Return original text if no JSON structure is found
+    return text
 
 
 class SubtitleObject(typing.TypedDict):
@@ -101,6 +142,7 @@ class GeminiSRTTranslator:
         gemini_api_key: str = None,
         gemini_api_key2: str = None,
         target_language: str = None,
+        source_language: str = None,  # <--- novo parâmetro
         input_file: str = None,
         output_file: str = None,
         video_file: str = None,
@@ -122,7 +164,8 @@ class GeminiSRTTranslator:
         thoughts_log: bool = False,
         resume: bool = None,
         debug: bool = False,
-        preserve_format: bool = True,  # <--- novo parâmetro
+        preserve_format: bool = True,
+        preserve_original_as_comment: bool = False,  # <--- novo parâmetro
     ):
         """
         Initialize the translator with necessary parameters.
@@ -147,6 +190,7 @@ class GeminiSRTTranslator:
             use_colors (bool): Whether to use colored output
             progress_log (bool): Whether to log progress to a file
             thoughts_log (bool): Whether to log thoughts to a file
+            preserve_original_as_comment (bool): Whether to add original text as invisible comment above translation
         """
         self.debug = debug
 
@@ -164,19 +208,15 @@ class GeminiSRTTranslator:
             os.path.join(dir_path, "gemini_translator_debug.log") if dir_path else "gemini_translator_debug.log"
         )
 
-        if output_file:
-            self.output_file = output_file
-        else:
-            suffix = "_translated.ass"
-            self.output_file = os.path.join(dir_path, f"{base_name}{suffix}") if dir_path else f"{base_name}.ass"
-
         self.progress_file = os.path.join(dir_path, f"{base_name}.progress") if dir_path else f"{base_name}.progress"
 
         self.gemini_api_key = gemini_api_key
         self.gemini_api_key2 = gemini_api_key2
         self.current_api_key = gemini_api_key
         self.target_language = target_language
+        self.source_language = source_language
         self.input_file = input_file
+        self.output_file = output_file  # Será redefinido depois se necessário
         self.video_file = video_file
         self.audio_file = audio_file
         self.extract_audio = extract_audio
@@ -195,6 +235,9 @@ class GeminiSRTTranslator:
         self.thoughts_log = thoughts_log
         self.resume = resume
         self.preserve_format = preserve_format
+        self.preserve_original_as_comment = preserve_original_as_comment
+        # Inicializar o dicionário para armazenar textos originais
+        self._original_texts_for_comments = {}
         self.original_ext = None  # será definido depois que input_file for resolvido
 
         self.current_api_number = 1
@@ -248,6 +291,7 @@ class GeminiSRTTranslator:
                 thinking_compatible=thinking_compatible,
                 audio_file=self.audio_file,
                 description=self.description,
+                source_language=self.source_language,  # <--- adicionar esta linha
             ),
             thinking_config=(
                 types.ThinkingConfig(
@@ -378,10 +422,15 @@ class GeminiSRTTranslator:
         if self.input_file and not self.original_ext:
             self.original_ext = os.path.splitext(self.input_file)[1].lower()
 
-        # Gerar output_file padrão mantendo a extensão original se solicitado
+        # Gerar output_file padrão mantendo a extensão original se não foi especificado
         if not self.output_file:
             base_name, _ext = os.path.splitext(self.input_file)
-            self.output_file = f"{base_name}_translated.ass"
+            # Preservar a extensão original por padrão
+            if self.original_ext:
+                extension = self.original_ext
+            else:
+                extension = ".ass"
+            self.output_file = f"{base_name}_translated{extension}"
 
         # Se o usuário passou um output_file mas queremos preservar .ass
         if (
@@ -469,10 +518,10 @@ class GeminiSRTTranslator:
                         except ValueError:
                             warning("Invalid input. Please enter a valid number.")
             except FileNotFoundError:
+                # Create a new copy of the original subtitle for translation
                 translated_subtitle = copy.deepcopy(original_subtitle)
-                # início 0-based
                 self.start_line = 0
-
+    
             if len(original_subtitle) != len(translated_subtitle):
                 error("Number of lines of existing translated file does not match the number of lines in the original file.", ignore_quiet=True)
                 exit(1)
@@ -544,6 +593,9 @@ class GeminiSRTTranslator:
                     # Reusar tradução
                     translated_visible = self.translation_cache[key]
                     translated_subtitle[i].text = self._reconstruct_with_tags(tags_prefix, translated_visible)
+                    # Armazenar texto original para comentário posterior (linhas com cache)
+                    if self.preserve_original_as_comment:
+                        self._original_texts_for_comments[i] = original_subtitle[i].text
                     self.skipped_duplicates += 1
                     i += 1
                 else:
@@ -554,6 +606,7 @@ class GeminiSRTTranslator:
                             "orig_index": batch_visible_map[key],
                             "dup_tags": tags_prefix,
                             "dup_visible": key,
+                            "original_text": original_subtitle[i].text,  # Adicionar texto original
                         })
                         i += 1
                     else:
@@ -604,6 +657,9 @@ class GeminiSRTTranslator:
                     if key and key in self.translation_cache:
                         translated_visible = self.translation_cache[key]
                         translated_subtitle[i].text = self._reconstruct_with_tags(tags_prefix, translated_visible)
+                        # Armazenar texto original para comentário posterior (linhas duplicadas)
+                        if self.preserve_original_as_comment:
+                            self._original_texts_for_comments[i] = original_subtitle[i].text
                         self.skipped_duplicates += 1
                         i += 1
                         continue
@@ -613,6 +669,7 @@ class GeminiSRTTranslator:
                             "orig_index": batch_visible_map[key],
                             "dup_tags": tags_prefix,
                             "dup_visible": key,
+                            "original_text": original_subtitle[i].text,  # Adicionar texto original
                         })
                         i += 1
                         continue
@@ -746,9 +803,21 @@ class GeminiSRTTranslator:
             if self.progress_log:
                 save_logs_to_file(self.log_file_path)
 
+            # Adicionar comentários com texto original se habilitado
+            if hasattr(self, 'preserve_original_as_comment') and self.preserve_original_as_comment and hasattr(self, '_original_texts_for_comments'):
+                info_with_progress("Adding original text as comments...")
+                self._log_debug(f"preserve_original_as_comment = {self.preserve_original_as_comment}")
+                self._log_debug(f"_original_texts_for_comments has {len(self._original_texts_for_comments)} entries")
+                self._add_original_comments(translated_subtitle)
+                success_with_progress("Original text comments added successfully!")
+            elif hasattr(self, 'preserve_original_as_comment') and self.preserve_original_as_comment:
+                warning_with_progress("preserve_original_as_comment is enabled but no original texts were stored")
+            
             # Salvamento simplificado
             translated_subtitle.save(self.output_file, encoding="utf-8", format="ass")
+            success(f"Translation saved to: {self.output_file}")
 
+            # Cleanup files
             if self.audio_file and os.path.exists(self.audio_file) and self.audio_extracted:
                 os.remove(self.audio_file)
             if self.progress_file and os.path.exists(self.progress_file):
@@ -822,14 +891,6 @@ class GeminiSRTTranslator:
     ) -> Content:
         """
         Process a batch of subtitles for translation.
-
-        Args:
-            batch (list[SubtitleObject]): Batch of subtitles to translate
-            previous_message (Content): Previous message for context
-            translated_subtitle (list[pysubs2.SSAFile]): List to store translated subtitles
-
-        Returns:
-            Content: The model's response for context in next batch
         """
         client = self._get_client()
         parts = []
@@ -858,6 +919,7 @@ class GeminiSRTTranslator:
             done_thinking = False
             retry += 1
             blocked = False
+            
             self._log_debug(f"Attempt {retry + 1} for batch {self.batch_number}.")
             if not self.streaming:
                 response = client.models.generate_content(
@@ -870,6 +932,7 @@ class GeminiSRTTranslator:
                     error_with_progress("Gemini has returned an empty response.")
                     info_with_progress("Sending last batch again...", isSending=True)
                     continue
+                    
                 for part in response.candidates[0].content.parts:
                     if not part.text:
                         continue
@@ -878,6 +941,7 @@ class GeminiSRTTranslator:
                         continue
                     else:
                         response_text += part.text
+
                 if self.thoughts_log and self.thinking:
                     if retry == 0:
                         info_with_progress(f"Batch {self.batch_number} thinking process saved to file.")
@@ -885,67 +949,142 @@ class GeminiSRTTranslator:
                         info_with_progress(f"Batch {self.batch_number}.{retry} thinking process saved to file.")
                     save_thoughts_to_file(thoughts_text, self.thoughts_file_path, retry)
                 
-                # Extrai o JSON do texto de resposta antes de tentar o parse
-                clean_response_text = extract_json_from_text(response_text)
-                self.translated_batch: list[SubtitleObject] = json_repair.loads(clean_response_text)
+                # Processa a resposta com tratamento de erro melhorado
+                try:
+                    clean_response_text = extract_json_from_text(response_text)
+                    self._log_debug(f"Extracted JSON: {clean_response_text}")
+                    
+                    if not clean_response_text or clean_response_text.strip() in ['', '{}', '[]']:
+                        self._log_debug("Empty or invalid JSON extracted from response")
+                        warning_with_progress("Received empty JSON response from API.")
+                        info_with_progress("Sending last batch again...", isSending=True)
+                        continue
+                    
+                    # Tenta fazer o parse do JSON
+                    self.translated_batch: list[SubtitleObject] = json_repair.loads(clean_response_text)
+                    self._log_debug(f"Successfully parsed JSON. Items: {len(self.translated_batch)}")
+                    
+                    # Verifica se o resultado é uma lista válida
+                    if not isinstance(self.translated_batch, list):
+                        self._log_debug(f"JSON is not a list. Type: {type(self.translated_batch)}")
+                        warning_with_progress("API returned invalid format (not a list).")
+                        info_with_progress("Sending last batch again...", isSending=True)
+                        continue
+                        
+                except json.JSONDecodeError as e:
+                    self._log_debug(f"JSON decode error: {e}. Raw response: {response_text}")
+                    warning_with_progress(f"JSON decode error: {e}")
+                    info_with_progress("Sending last batch again...", isSending=True)
+                    continue
+                except Exception as e:
+                    self._log_debug(f"Unexpected error during JSON processing: {e}. Raw response: {response_text}")
+                    warning_with_progress(f"Error processing response: {e}")
+                    info_with_progress("Sending last batch again...", isSending=True)
+                    continue
+                    
             else:
+                # Streaming processing with improved error handling
                 if blocked:
                     break
                 response = client.models.generate_content_stream(
                     model=self.model_name, contents=contents, config=self._get_config()
                 )
                 self._log_debug("API stream opened. Waiting for chunks...")
-                for chunk in response:
-                    if chunk.prompt_feedback:
-                        blocked = True
-                        break
-                    self._log_debug(f"Received chunk: {chunk}")
-                    # Processar 'thoughts' primeiro
-                    if self.thinking and hasattr(chunk, "thought") and chunk.thought:
-                        update_loading_animation(chunk_size=chunk_size, isThinking=True)
-                        thoughts_text += chunk.thought
-                        continue
-                    
-                    # Processar texto de conteúdo
-                    if chunk.text:
-                        if not done_thinking and self.thoughts_log and self.thinking:
-                            log_message = f"Batch {self.batch_number}"
-                            if retry > 0:
-                                log_message += f".{retry}"
-                            info_with_progress(f"{log_message} thinking process saved to file.")
-                            save_thoughts_to_file(thoughts_text, self.thoughts_file_path, retry)
-                            done_thinking = True
-                        response_text += chunk.text
+                
+                try:
+                    for chunk in response:
+                        if chunk.prompt_feedback:
+                            blocked = True
+                            break
+                        self._log_debug(f"Received chunk: {chunk}")
+                        
+                        # Processar 'thoughts' primeiro
+                        if self.thinking and hasattr(chunk, "thought") and chunk.thought:
+                            update_loading_animation(chunk_size=chunk_size, isThinking=True)
+                            thoughts_text += chunk.thought
+                            continue
+                        
+                        # Processar texto de conteúdo
+                        if chunk.text:
+                            if not done_thinking and self.thoughts_log and self.thinking:
+                                log_message = f"Batch {self.batch_number}"
+                                if retry > 0:
+                                    log_message += f".{retry}"
+                                info_with_progress(f"{log_message} thinking process saved to file.")
+                                save_thoughts_to_file(thoughts_text, self.thoughts_file_path, retry)
+                                done_thinking = True
+                            response_text += chunk.text
+                            
+                except Exception as e:
+                    self._log_debug(f"Error during streaming: {e}")
+                    warning_with_progress(f"Streaming error: {e}")
+                    info_with_progress("Sending last batch again...", isSending=True)
+                    continue
+
                 self._log_debug("Finished receiving chunks from API stream.")
 
+                # Process the complete response
                 try:
-                    # Extrai o JSON do texto de resposta antes de tentar o parse
                     clean_response_text = extract_json_from_text(response_text)
-                    if clean_response_text:
-                        try:
-                            self.translated_batch: list[SubtitleObject] = json_repair.loads(clean_response_text)
-                            self._log_debug(f"Successfully parsed JSON from response. Items: {len(self.translated_batch)}")
-                        except Exception as e:
-                            self._log_debug(f"JSON parse failed. Error: {e}. Raw response: {response_text}")
-                            warning_with_progress(f"Could not parse JSON response: {e}")
-                            info_with_progress("Sending last batch again...", isSending=True)
-                            continue
-                    else:
-                        warning_with_progress("Received empty response from API.")
-                        self._log_debug(f"Received empty or non-JSON response. Raw response: {response_text}")
+                    self._log_debug(f"Extracted JSON from stream: {clean_response_text}")
+                    
+                    if not clean_response_text or clean_response_text.strip() in ['', '{}', '[]']:
+                        self._log_debug("Empty or invalid JSON extracted from streaming response")
+                        warning_with_progress("Received empty JSON response from streaming API.")
                         info_with_progress("Sending last batch again...", isSending=True)
-                        continue # Reinicia o loop para reenviar o lote
-                    processed = self._process_translated_lines(
-                        translated_lines=self.translated_batch, translated_subtitle=translated_subtitle, batch=batch, finished=False
-                    )
-                    if not processed:
-                        break
+                        continue
+                    
+                    # Try multiple JSON parsing strategies
+                    parsed_json = None
+                    parsing_error = None
+                    
+                    # First attempt: json_repair.loads
+                    try:
+                        parsed_json = json_repair.loads(clean_response_text)
+                        self._log_debug("Successfully parsed JSON using json_repair.loads")
+                    except Exception as e:
+                        parsing_error = e
+                        self._log_debug(f"json_repair.loads failed: {e}")
+                        
+                        # Second attempt: standard json.loads
+                        try:
+                            parsed_json = json.loads(clean_response_text)
+                            self._log_debug("Successfully parsed JSON using standard json.loads")
+                        except Exception as e2:
+                            self._log_debug(f"Standard json.loads also failed: {e2}")
+                            
+                            # Third attempt: Try to clean up common issues
+                            try:
+                                # Remove any trailing commas and fix common issues
+                                cleaned_text = re.sub(r',\s*}', '}', clean_response_text)
+                                cleaned_text = re.sub(r',\s*]', ']', cleaned_text)
+                                parsed_json = json.loads(cleaned_text)
+                                self._log_debug("Successfully parsed JSON after manual cleanup")
+                            except Exception as e3:
+                                self._log_debug(f"Manual cleanup JSON parsing also failed: {e3}")
+                    
+                    if parsed_json is None:
+                        self._log_debug(f"All JSON parsing attempts failed. Raw response: {response_text[:500]}...")
+                        warning_with_progress(f"Streaming error: {parsing_error}")
+                        info_with_progress("Sending last batch again...", isSending=True)
+                        continue
+                    
+                    self.translated_batch: list[SubtitleObject] = parsed_json
+                    self._log_debug(f"Successfully parsed streaming JSON. Items: {len(self.translated_batch)}")
+                    
+                    if not isinstance(self.translated_batch, list):
+                        self._log_debug(f"Streaming JSON is not a list. Type: {type(self.translated_batch)}")
+                        warning_with_progress("Streaming API returned invalid format (not a list).")
+                        info_with_progress("Sending last batch again...", isSending=True)
+                        continue
+                        
                 except Exception as e:
-                    self._log_debug(f"Exception during stream processing: {e}")
-                    warning_with_progress(f"Exception occurred during streaming response processing: {e}")
+                    self._log_debug(f"Unexpected streaming error: {e}. Raw response: {response_text[:500]}...")
+                    warning_with_progress(f"Streaming processing error: {e}")
+                    info_with_progress("Sending last batch again...", isSending=True)
                     continue
-                update_loading_animation(chunk_size=len(self.translated_batch))
 
+            # Process translated lines if we got valid data
             if len(self.translated_batch) == len(batch):
                 processed = self._process_translated_lines(
                     translated_lines=self.translated_batch,
@@ -955,25 +1094,26 @@ class GeminiSRTTranslator:
                 )
                 if not processed:
                     info_with_progress("Sending last batch again...", isSending=True)
-                    self._log_debug("Processing translated lines failed. Retrying remaining items in batch.")
                     continue
                 done = True
                 self.batch_number += 1
             else:
-                if processed:
-                    # This case handles partial success. Some lines were processed.
+                if len(self.translated_batch) > 0:
                     warning_with_progress(
-                        f"Gemini has returned an unexpected response. Expected {len(batch)} lines, got {len(self.translated_batch)}."
+                        f"Expected {len(batch)} lines, got {len(self.translated_batch)}. Retrying batch."
                     )
-                self._log_debug(f"Mismatch in line count. Expected {len(batch)}, got {len(self.translated_batch)}. Retrying.")
+                else:
+                    warning_with_progress("No valid translations received. Retrying batch.")
+                self._log_debug(f"Mismatch in line count. Expected {len(batch)}, got {len(self.translated_batch)}.")
                 info_with_progress("Sending last batch again...", isSending=True)
                 continue
 
         if blocked:
             error_with_progress(
-                "Gemini has blocked the translation for unknown razões. Tente mudar sua descrição (se tiver uma) e/ou o tamanho do lote e tente novamente."
+                "Gemini has blocked the translation for unknown reasons. Try changing your description (if you have one) and/or the batch size and try again."
             )
             signal.raise_signal(signal.SIGINT)
+            
         parts = []
         parts.append(types.Part(thought=True, text=thoughts_text)) if thoughts_text else None
         parts.append(types.Part(text=response_text))
@@ -991,25 +1131,19 @@ class GeminiSRTTranslator:
         batch: list[SubtitleObject],
         finished: bool,
     ) -> bool:
-        """
-        Process translated lines and update the subtitle object.
-        If processing is partial, it updates the original batch to contain only unprocessed items.
-        """
-        if not translated_lines:
-            return False
-
-        processed_indexes = set()
+        """Process and apply translated lines to subtitle file"""
         all_successful = True
+        processed_indexes = set()
 
         for line in translated_lines:
-            # Basic validation for the returned object
-            if "content" not in line or "index" not in line or not str(line["index"]).isdigit():
-                warning_with_progress(f"Gemini returned a malformed object, skipping: {line}")
+            try:
+                line_index_1b = int(line["index"])
+                line_index = line_index_1b - 1
+            except (ValueError, KeyError):
+                warning_with_progress(f"Invalid index: {line.get('index', 'unknown')}")
                 all_successful = False
                 continue
 
-            line_index_1b = int(line["index"])
-            line_index = line_index_1b - 1   # converter para 0-based
             original_item = next((item for item in batch if int(item["index"]) == line_index_1b), None)
             if not (0 <= line_index < len(translated_subtitle)):
                 warning_with_progress(f"Index out of range: {line_index_1b}")
@@ -1020,8 +1154,13 @@ class GeminiSRTTranslator:
                 translated_subtitle[line_index].text = f"\u202b{line['content']}\u202c"
             else:
                 translated_subtitle[line_index].text = line["content"]
+            
+            # Armazenar texto original para comentário posterior
+            if original_item and self.preserve_original_as_comment:
+                self._original_texts_for_comments[line_index] = original_item["content"]
+                self._log_debug(f"Stored original text for line {line_index}: {original_item['content'][:50]}...")
 
-            # --- CACHE STORE ---
+            # Cache store
             if original_item:
                 _, orig_visible = self._split_leading_tags(original_item["content"])
                 tags_tr, trans_visible = self._split_leading_tags(translated_subtitle[line_index].text)
@@ -1029,26 +1168,89 @@ class GeminiSRTTranslator:
                     self.translation_cache.setdefault(orig_visible, trans_visible)
             processed_indexes.add(str(line_index))
 
+        # Processar duplicatas pendentes intra-batch
+        if self._pending_intra_batch_duplicates:
+            self._log_debug(f"Processing {len(self._pending_intra_batch_duplicates)} pending intra-batch duplicates")
+            for dup_info in self._pending_intra_batch_duplicates:
+                dup_index = dup_info["dup_index"]
+                orig_index = dup_info["orig_index"]
+                dup_tags = dup_info["dup_tags"]
+                
+                # Copiar tradução da linha original
+                if orig_index < len(translated_subtitle) and dup_index < len(translated_subtitle):
+                    _, trans_visible = self._split_leading_tags(translated_subtitle[orig_index].text)
+                    translated_subtitle[dup_index].text = self._reconstruct_with_tags(dup_tags, trans_visible)
+                    
+                    # Armazenar texto original para comentário se disponível
+                    if self.preserve_original_as_comment and "original_text" in dup_info:
+                        self._original_texts_for_comments[dup_index] = dup_info["original_text"]
+                        self._log_debug(f"Stored original text for duplicate line {dup_index}")
+                    
+                    self.skipped_duplicates += 1
+            
+            # Limpar lista de duplicatas pendentes
+            self._pending_intra_batch_duplicates.clear()
+
         if not all_successful or len(processed_indexes) < len(batch):
-            batch[:] = [item for item in batch if item["index"] not in processed_indexes]
             return False
-
-        # Propagar duplicadas internas do batch (primeira vez que o original foi traduzido)
-        if finished and getattr(self, "_pending_intra_batch_duplicates", None):
-            for dup in self._pending_intra_batch_duplicates:
-                orig_idx = dup["orig_index"]
-                dup_idx = dup["dup_index"]
-                if not (0 <= orig_idx < len(translated_subtitle) and 0 <= dup_idx < len(translated_subtitle)):
-                    continue
-                _tags_orig, trans_visible = self._split_leading_tags(translated_subtitle[orig_idx].text)
-                final_text = f"{dup['dup_tags']}{trans_visible}"
-                translated_subtitle[dup_idx].text = final_text
-                if dup["dup_visible"]:
-                    self.translation_cache.setdefault(dup["dup_visible"], trans_visible)
-                self.skipped_duplicates += 1
-            self._pending_intra_batch_duplicates = []
-
         return True
+
+    def _add_original_comments(self, translated_subtitle: pysubs2.SSAFile):
+        """
+        Adiciona comentários invisíveis com texto original acima das traduções.
+        """
+        if not self._original_texts_for_comments:
+            self._log_debug("No original texts stored for comments")
+            return
+        
+        self._log_debug(f"Adding original comments for {len(self._original_texts_for_comments)} lines")
+        
+        # Criar lista de novos eventos ordenados por índice
+        new_events = []
+        
+        # Processar eventos em ordem, inserindo comentários quando necessário
+        for i, event in enumerate(translated_subtitle.events):
+            # Se temos texto original para este índice, adicionar comentário antes
+            if i in self._original_texts_for_comments:
+                original_text = self._original_texts_for_comments[i]
+                
+                # Limpar o texto original de tags ASS para o comentário
+                clean_original = self._clean_ass_tags(original_text)
+                
+                self._log_debug(f"Creating comment for line {i}: {clean_original[:50]}...")
+                
+                # Criar evento de comentário invisível
+                comment_event = pysubs2.SSAEvent()
+                comment_event.start = event.start
+                comment_event.end = event.end
+                # Usar tag de transparência total para tornar invisível
+                comment_event.text = f"{{\\alpha&HFF&}}# Original: {clean_original}"
+                comment_event.style = event.style
+                comment_event.name = event.name
+                comment_event.marginl = event.marginl
+                comment_event.marginr = event.marginr
+                comment_event.marginv = event.marginv
+                comment_event.effect = event.effect
+                comment_event.layer = event.layer
+                
+                new_events.append(comment_event)
+            
+            # Adicionar o evento original (tradução)
+            new_events.append(event)
+        
+        # Substituir os eventos na legenda
+        original_event_count = len(translated_subtitle.events)
+        translated_subtitle.events = new_events
+        self._log_debug(f"Added {len(new_events) - original_event_count} comment events")
+
+    def _clean_ass_tags(self, text: str) -> str:
+        """
+        Remove tags ASS do texto para usar em comentários.
+        """
+        import re
+        # Remove tags ASS como {\tag} e {\tag&value&}
+        cleaned = re.sub(r'\{[^}]*\}', '', text)
+        return cleaned.strip()
 
     def _dominant_strong_direction(self, s: str) -> str:
         """

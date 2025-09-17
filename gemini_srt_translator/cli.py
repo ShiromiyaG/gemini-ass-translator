@@ -76,7 +76,11 @@ def cmd_translate(args) -> None:
 
     # Set target language
     gst.target_language = args.target_language or input("Enter target language: ").strip()
-
+    
+    # Set source language if provided
+    if hasattr(args, 'source_language') and args.source_language:
+        gst.source_language = args.source_language
+    
     # Model selection
     if args.model:
         gst.model_name = args.model
@@ -90,8 +94,10 @@ def cmd_translate(args) -> None:
     if args.audio_file:
         if validate_file_path(args.audio_file):
             gst.audio_file = args.audio_file
-    if args.extract_audio:
+    if args.extract_audio is not None:
         gst.extract_audio = args.extract_audio
+    if args.preserve_original_comment is not None:
+        gst.preserve_original_as_comment = args.preserve_original_comment
     if args.start_line:
         gst.start_line = args.start_line
     if args.description:
@@ -108,27 +114,27 @@ def cmd_translate(args) -> None:
         gst.thinking_budget = args.thinking_budget
 
     # Set boolean flags
-    if args.no_streaming:
+    if args.no_streaming is not None:
         gst.streaming = not args.no_streaming
-    if args.no_thinking:
+    if args.no_thinking is not None:
         gst.thinking = not args.no_thinking
-    if args.paid_quota:
+    if args.paid_quota is not None:
         gst.free_quota = not args.paid_quota
-    if args.skip_upgrade:
+    if args.skip_upgrade is not None:
         gst.skip_upgrade = args.skip_upgrade
-    if args.no_colors:
+    if args.no_colors is not None:
         gst.use_colors = not args.no_colors
-    if args.progress_log:
+    if args.progress_log is not None:
         gst.progress_log = args.progress_log
-    if args.thoughts_log:
+    if args.thoughts_log is not None:
         gst.thoughts_log = args.thoughts_log
-    if args.quiet:
+    if args.quiet is not None:
         gst.quiet = args.quiet
-    if args.resume:
+    if args.resume is not None:
         gst.resume = args.resume
 
     # Execute translation
-    if args.debug:
+    if args.debug is not None:
         gst.debug = args.debug
     try:
         gst.translate()
@@ -197,6 +203,7 @@ Examples:
     required_group.add_argument("-v", "--video-file", help="Video file path (for SRT/Audio extraction)")
 
     translate_parser.add_argument("-l", "--target-language", help="Target language for translation")
+    translate_parser.add_argument("--source-language", help="Source language to translate from (if specified, only this language will be translated)")
     translate_parser.add_argument("-k", "--api-key", help="Gemini API key")
 
     # Optional arguments
@@ -231,6 +238,9 @@ Examples:
     )
     translate_parser.add_argument(
         "--extract-audio", action="store_true", default=None, help="Extract audio from video for context"
+    )
+    translate_parser.add_argument(
+        "--preserve-original-comment", action="store_true", default=None, help="Add original text as invisible comment above translation"
     )
 
     # List models command
