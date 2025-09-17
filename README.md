@@ -1,3 +1,33 @@
+# 🌟 Gemini ASS Translator
+
+## 📦 Installation
+
+```sh
+# Create a virtual environment
+python -m venv venv
+
+# Activate the virtual environment
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
+# Install inside the virtual environment
+pip install -e .
+```
+
+### 🖥️ Using the Command Line Interface (CLI)
+
+#### Basic Translation
+> ### ⚠️ **Caution!**
+>
+>  It replaces the original subtitle with the translated subtitle
+
+```bash
+gst translate -i "input.ass" -l "Brazilian Portuguese" -k API_KEY --model gemini-2.5-pro --batch-size 300 --temperature 0.7 --progress-log
+```
+
+
 # 🌟 Gemini SRT Translator
 
 [![PyPI version](https://img.shields.io/pypi/v/gemini-srt-translator)](https://pypi.org/project/gemini-srt-translator)
