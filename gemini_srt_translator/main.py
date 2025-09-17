@@ -726,11 +726,11 @@ class GeminiSRTTranslator:
                         self.batch_size = len(batch)
 
                     start_time = time.time()
-                    previous_message = self._process_batch(batch, previous_message, translated_subtitle)
+                    previous_message = self._process_batch(batch, previous_message, translated_subtitle, i, total)
                     end_time = time.time()
 
                     # Update progress bar
-                    progress_bar(i, total, prefix="Translating:", suffix=f"{self.model_name}", isSending=True)
+                    progress_bar(i, total, prefix="Translating:", suffix=f"{self.model_name}", isSending=False)
 
                     # Save progress after each batch
                     self._save_progress(i + 1)
@@ -892,6 +892,8 @@ class GeminiSRTTranslator:
         batch: list[SubtitleObject],
         previous_message: list[Content],
         translated_subtitle: list[pysubs2.SSAFile],
+        i: int,
+        total: int,
     ) -> Content:
         """
         Process a batch of subtitles for translation.
@@ -994,6 +996,11 @@ class GeminiSRTTranslator:
                     model=self.model_name, contents=contents, config=self._get_config()
                 )
                 self._log_debug("API stream opened. Waiting for chunks...")
+
+                # ---> INÍCIO DA NOVA LÓGICA <---
+                lines_received_in_batch = 0
+                last_lines_received_count = 0
+                # ---> FIM DA NOVA LÓGICA <---
                 
                 try:
                     for chunk in response:
@@ -1018,6 +1025,24 @@ class GeminiSRTTranslator:
                                 save_thoughts_to_file(thoughts_text, self.thoughts_file_path, retry)
                                 done_thinking = True
                             response_text += chunk.text
+                            
+                            # ---> INÍCIO DA NOVA LÓGICA DE ATUALIZAÇÃO <---
+                            # Conta quantas linhas já foram recebidas no texto parcial
+                            lines_received_in_batch = response_text.count('"index":')
+
+                            # Se o número de linhas recebidas mudou, atualiza a barra
+                            if lines_received_in_batch > last_lines_received_count:
+                                # O progresso total é o das linhas já prontas (i) + as recebidas neste lote
+                                current_progress = i - len(batch) + lines_received_in_batch
+                                progress_bar(
+                                    current_progress, 
+                                    total, 
+                                    prefix="Traduzindo:", 
+                                    suffix=f"{self.model_name}", 
+                                    isSending=False
+                                )
+                                last_lines_received_count = lines_received_in_batch
+                            # ---> FIM DA NOVA LÓGICA DE ATUALIZAÇÃO <---
                             
                 except Exception as e:
                     self._log_debug(f"Error during streaming: {e}")
@@ -1095,6 +1120,8 @@ class GeminiSRTTranslator:
                     translated_subtitle=translated_subtitle,
                     batch=batch,
                     finished=True,
+                    i=i,
+                    total=total,
                 )
                 if not processed:
                     info_with_progress("Sending last batch again...", isSending=True)
@@ -1134,6 +1161,8 @@ class GeminiSRTTranslator:
         translated_subtitle: list[pysubs2.SSAFile],
         batch: list[SubtitleObject],
         finished: bool,
+        i: int,
+        total: int,
     ) -> bool:
         """Process and apply translated lines to subtitle file"""
         all_successful = True
@@ -1171,6 +1200,9 @@ class GeminiSRTTranslator:
                 if orig_visible and trans_visible:
                     self.translation_cache.setdefault(orig_visible, trans_visible)
             processed_indexes.add(str(line_index))
+
+        # Update progress bar after processing batch lines
+        progress_bar(i + len(processed_indexes), total, prefix="Processing:", suffix=self.model_name, isSending=False)
 
         # Processar duplicatas pendentes intra-batch
         if self._pending_intra_batch_duplicates:
