@@ -734,6 +734,10 @@ class GeminiSRTTranslator:
 
                     # Save progress after each batch
                     self._save_progress(i + 1)
+                    
+                    # Save the translated file after each successful batch
+                    translated_subtitle.save(self.output_file, encoding="utf-8", format="ass")
+                    
                     # Controle de taxa substituindo bloco antigo com variáveis indefinidas (delay/delay_time)
                     # Garante um intervalo mínimo entre lotes para evitar limites de API.
                     elapsed = end_time - start_time
